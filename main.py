@@ -2,7 +2,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from youtube_transcript_api import YouTubeTranscriptApi
 from urllib.parse import urlparse, parse_qs
+from transformers import BartTokenizer
 
+tokenizer = BartTokenizer.from_pretrained("facebook/bart-large-cnn")
 
 app = FastAPI(title="YouTube Summarizer API")
 
@@ -49,29 +51,45 @@ def clean_text(text: str) -> str:
     return text
 
 
-def chunk_text(
-    text: str,
-    chunk_size: int = 800,
-    overlap: int = 100
-) -> list[str]:
-
-    words = text.split()
+def chunk_text(text: str, chunk_size: int = 900, overlap: int = 100) -> list[str]:
+    tokens = tokenizer.encode(text, add_special_tokens=False)
 
     chunks = []
 
     start = 0
 
-    while start < len(words):
-
+    while start < len(tokens):
         end = start + chunk_size
 
-        chunk = " ".join(words[start:end])
+        chunk_tokens = tokens[start:end]
+
+        chunk = tokenizer.decode(
+            chunk_tokens,
+            skip_special_tokens=True
+        )
+
         chunks.append(chunk)
 
         start += chunk_size - overlap
 
     return chunks
 
+
+#--------------- this step depends on the colab notebook -----------
+
+import requests
+COLAB_URL = "https://scalding-creme-broiling.ngrok-free.dev"
+
+def summarize_chunk(text: str) -> str:
+    response = requests.post(
+        f"{COLAB_URL}/summarize",
+        json={"text": text},
+        timeout=120
+    )
+
+    response.raise_for_status()
+
+    return response.json()["summary"]
 
 # ---------- API Endpoint ----------
 
@@ -108,12 +126,24 @@ def process_video(request: VideoRequest):
             overlap=100
         )
 
+        summaries = []
+
+        for chunk in chunks:
+            summary = summarize_chunk(chunk)
+            summaries.append(summary)
+
+        combined_summaries = " ".join(summaries)
+
+        final_summary = "\n\n".join(summaries)
+
         return {
             "video_id": video_id,
             "transcript_length": len(transcript),
             "number_of_chunks": len(chunks),
-            "chunks": chunks
-        }
+            "summary": final_summary
+}
+
+
 
     except HTTPException:
         raise
@@ -124,3 +154,20 @@ def process_video(request: VideoRequest):
             status_code=500,
             detail=f"Failed to process video: {str(e)}"
         )
+
+
+@app.post("/test-summary")
+def test_summary():
+    text = """
+    Artificial intelligence is transforming many industries.
+    Machine learning allows computers to learn patterns from data.
+    Deep learning uses neural networks with multiple layers
+    to solve complex problems such as image recognition,
+    natural language processing, and speech recognition.
+    """
+
+    summary = summarize_chunk(text)
+
+    return {
+        "summary": summary
+    }
